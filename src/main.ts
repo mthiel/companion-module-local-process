@@ -22,6 +22,8 @@ export { UpgradeScripts }
 
 // How often to check for tools that are running but weren't launched by this module.
 const EXTERNAL_POLL_INTERVAL_MS = 5000
+// How much trailing stderr output to keep (and log) per launched process, in case it fails on startup.
+const STDERR_TAIL_MAX_LENGTH = 4000
 
 const execFileAsync = promisify(execFile)
 
@@ -138,12 +140,14 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		let child: ChildProcess
 		try {
 			// detached + unref: children outlive this module instance (e.g. across a Companion restart)
-			// and shutting down Companion never has to wait on them.
+			// and shutting down Companion never has to wait on them. stderr is piped (not ignored) purely
+			// for diagnostics: a bounded tail of it gets logged if the process exits with a non-zero code,
+			// since that's otherwise the only way to see why e.g. a port conflict killed it on startup.
 			child = spawn(tool.path, tool.args, {
 				cwd: tool.cwd,
 				env: { ...process.env, ...sessionEnv },
 				detached: true,
-				stdio: 'ignore',
+				stdio: ['ignore', 'ignore', 'pipe'],
 			})
 			child.unref()
 		} catch (e) {
@@ -154,6 +158,11 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.processes.set(id, child)
 		this.externallyRunning.delete(id)
 		this.checkFeedbacks('process_running')
+
+		let stderrTail = ''
+		child.stderr?.on('data', (chunk: Buffer) => {
+			stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL_MAX_LENGTH)
+		})
 
 		child.once('error', (err) => {
 			this.log('error', `"${tool.label}" failed to start: ${err.message}`)
@@ -173,6 +182,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			} else {
 				this.log('info', `"${tool.label}" exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`)
 				this.checkFeedbacks('process_running')
+			}
+			if (code !== null && code !== 0 && stderrTail.trim()) {
+				this.log('warn', `"${tool.label}" stderr:\n${stderrTail.trim()}`)
 			}
 			this.processes.delete(id)
 		})
