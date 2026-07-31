@@ -1,5 +1,5 @@
 {
-	"name": "your-module-name",
+	"name": "companion-module-local-process",
 	"version": "0.1.0",
 	"main": "dist/main.js",
 	"type": "module",
@@ -16,14 +16,15 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/bitfocus/companion-module-your-module-name.git"
+		"url": "git+https://github.com/mthiel/companion-module-local-process.git"
 	},
 	"engines": {
 		"node": "^22.20",
 		"yarn": "^4"
 	},
 	"dependencies": {
-		"@companion-module/base": "2.0.4"
+		"@companion-module/base": "2.0.4",
+		"ps-list": "^9.0.0"
 	},
 	"devDependencies": {
 		"@companion-module/tools": "^3.0.1",

@@ -1,29 +1,58 @@
+import type { DropdownChoice } from '@companion-module/base'
 import type ModuleInstance from './main.js'
 
 export type ActionsSchema = {
-	sample_action: {
+	start_process: {
 		options: {
-			num: number
+			tool: string
+		}
+	}
+	stop_process: {
+		options: {
+			tool: string
+		}
+	}
+	toggle_process: {
+		options: {
+			tool: string
 		}
 	}
 }
 
+function getToolChoices(self: ModuleInstance): DropdownChoice[] {
+	return self.getManagedTools().map((tool) => ({ id: tool.id, label: tool.label }))
+}
+
 export function UpdateActions(self: ModuleInstance): void {
+	const choices = getToolChoices(self)
+	const toolOption = {
+		id: 'tool' as const,
+		type: 'dropdown' as const,
+		label: 'Tool',
+		choices,
+		default: choices[0]?.id ?? '',
+	}
+
 	self.setActionDefinitions({
-		sample_action: {
-			name: 'My First Action',
-			options: [
-				{
-					id: 'num',
-					type: 'number',
-					label: 'Test',
-					default: 5,
-					min: 0,
-					max: 100,
-				},
-			],
+		start_process: {
+			name: 'Start Process',
+			options: [toolOption],
 			callback: async (event) => {
-				console.log('Hello world!', event.options.num)
+				await self.startProcess(event.options.tool)
+			},
+		},
+		stop_process: {
+			name: 'Stop Process',
+			options: [toolOption],
+			callback: async (event) => {
+				await self.stopProcess(event.options.tool)
+			},
+		},
+		toggle_process: {
+			name: 'Toggle Process',
+			options: [toolOption],
+			callback: async (event) => {
+				await self.toggleProcess(event.options.tool)
 			},
 		},
 	})

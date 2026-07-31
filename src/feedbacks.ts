@@ -1,41 +1,41 @@
+import type { DropdownChoice } from '@companion-module/base'
 import type ModuleInstance from './main.js'
 
 export type FeedbacksSchema = {
-	sample_feedback: {
+	process_running: {
 		type: 'boolean'
 		options: {
-			num: number
+			tool: string
 		}
 	}
 }
 
+function getToolChoices(self: ModuleInstance): DropdownChoice[] {
+	return self.getManagedTools().map((tool) => ({ id: tool.id, label: tool.label }))
+}
+
 export function UpdateFeedbacks(self: ModuleInstance): void {
+	const choices = getToolChoices(self)
+
 	self.setFeedbackDefinitions({
-		sample_feedback: {
-			name: 'Example Feedback',
+		process_running: {
+			name: 'Process Running',
 			type: 'boolean',
 			defaultStyle: {
-				bgcolor: 0xff0000,
+				bgcolor: 0x00ff00,
 				color: 0x000000,
 			},
 			options: [
 				{
-					id: 'num',
-					type: 'number',
-					label: 'Test',
-					default: 5,
-					min: 0,
-					max: 10,
-					clampValues: true, // If value is outside the min/max, clamp it to the min/max instead of rejecting the input
+					id: 'tool',
+					type: 'dropdown',
+					label: 'Tool',
+					choices,
+					default: choices[0]?.id ?? '',
 				},
 			],
 			callback: (feedback) => {
-				console.log('Hello world!', feedback.options.num)
-				if (feedback.options.num > 5) {
-					return true
-				} else {
-					return false
-				}
+				return self.isRunning(feedback.options.tool)
 			},
 		},
 	})

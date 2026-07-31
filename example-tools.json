@@ -1,0 +1,41 @@
+[
+	{
+		"id": "elitedangerous",
+		"label": "Elite Dangerous",
+		"processMatch": "EliteDangerous64.exe",
+		"path": "/usr/bin/steam",
+		"args": ["-applaunch", "359320"],
+		"cwd": ""
+	},
+	{
+		"id": "edmc",
+		"label": "E:D Market Connector",
+		"flatpakAppId": "io.edcd.EDMarketConnector",
+		"path": "/usr/bin/flatpak",
+		"args": ["run", "--branch=stable", "--arch=x86_64", "--command=edmarketconnector", "io.edcd.EDMarketConnector"],
+		"cwd": ""
+	},
+	{
+		"id": "covasnext",
+		"label": "COVAS:NEXT",
+		"flatpakAppId": "com.covasnext.ui",
+		"path": "/usr/bin/flatpak",
+		"args": ["run", "--branch=master", "--arch=x86_64", "--command=covas-next-ui-wrapper", "com.covasnext.ui"],
+		"cwd": ""
+	},
+	{
+		"id": "edmh",
+		"label": "E:D Materials Helper",
+		"processMatch": "nl.jixxed.eliteodysseymaterials.Main",
+		"path": "/opt/elite-dangerous-odyssey-materials-helper/bin/Elite Dangerous Odyssey Materials Helper Launcher",
+		"args": [],
+		"cwd": "/tmp"
+	},
+	{
+		"id": "srvsurvey",
+		"label": "SRV Survey",
+		"path": "/home/matt/Applications/SrvSurvey",
+		"args": [],
+		"cwd": ""
+	}
+]

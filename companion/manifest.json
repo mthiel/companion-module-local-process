@@ -1,28 +1,32 @@
 {
 	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
 	"type": "connection",
-	"id": "your-module-name",
-	"name": "your-module-name",
-	"shortname": "module-shortname",
-	"description": "A short one line description of your module",
-	"version": "0.0.0",
+	"id": "local-process",
+	"name": "local-process",
+	"shortname": "Local Process Control",
+	"description": "Start, stop, and monitor local external processes (e.g. tools used alongside Elite Dangerous) without shell-command polling.",
+	"version": "0.1.0",
 	"license": "MIT",
-	"repository": "git+https://github.com/bitfocus/companion-module-your-module-name.git",
-	"bugs": "https://github.com/bitfocus/companion-module-your-module-name/issues",
+	"repository": "git+https://github.com/mthiel/companion-module-local-process.git",
+	"bugs": "https://github.com/mthiel/companion-module-local-process/issues",
 	"maintainers": [
 		{
-			"name": "Your name",
-			"email": "Your email"
+			"name": "Matthew Thiel",
+			"email": "mthiel@me.com"
 		}
 	],
 	"runtime": {
 		"type": "node22",
 		"api": "nodejs-ipc",
 		"apiVersion": "0.0.0",
-		"entrypoint": "../dist/main.js"
+		"entrypoint": "../dist/main.js",
+		"permissions": {
+			"child-process": true,
+			"filesystem": true
+		}
 	},
 	"legacyIds": [],
-	"manufacturer": "Your company",
-	"products": ["Your product"],
-	"keywords": []
+	"manufacturer": "Matthew Thiel",
+	"products": ["Local Process"],
+	"keywords": ["process", "launcher"]
 }
