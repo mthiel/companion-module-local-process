@@ -125,6 +125,14 @@ a single opt-in field per tool, rather than being how every tool is tracked.
   those values in. If that command isn't available, tools are still launched, just without those
   variables, and a warning is logged.
 - `flatpak` on `PATH` if any tool uses `flatpakAppId`.
+- `/bin/sh`. Every tool is launched via `sh -c 'unset NODE_OPTIONS ...; exec "$0" "$@"'` rather than
+  invoking `path` directly — Node's permission model, active on the module host per the manifest's
+  declared permissions, forcibly re-injects `NODE_OPTIONS` (carrying `--permission`) into every child
+  process it spawns, regardless of the `env` passed to `spawn()`. That's harmless for non-Node
+  executables, but fatal for a tool that's itself a Node process, since Node refuses to start at all
+  with `--permission` set via `NODE_OPTIONS`. The interposed shell unsets it right before `exec`, which
+  replaces the process image in place (same pid), so this doesn't change how the resulting process is
+  tracked or killed.
 
 ## Getting started (development)
 

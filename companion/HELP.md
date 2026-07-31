@@ -83,3 +83,8 @@ directly to any matching process id.
   running and that value is populated.
 - Only one instance of each tool is tracked at a time; Start is a no-op if the tool is already
   detected as running.
+- If a tool that's itself a Node.js process fails immediately with an error like `--permission is not
+allowed in NODE_OPTIONS`, that's Companion's own module sandboxing leaking into the launched
+  process — this module already works around it, so if you see this, check the connection log's
+  captured stderr for the tool's actual startup error instead (a port conflict, missing dependency,
+  etc. are the more likely real cause).

@@ -143,12 +143,31 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			// and shutting down Companion never has to wait on them. stderr is piped (not ignored) purely
 			// for diagnostics: a bounded tail of it gets logged if the process exits with a non-zero code,
 			// since that's otherwise the only way to see why e.g. a port conflict killed it on startup.
-			child = spawn(tool.path, tool.args, {
-				cwd: tool.cwd,
-				env: { ...process.env, ...sessionEnv },
-				detached: true,
-				stdio: ['ignore', 'ignore', 'pipe'],
-			})
+			//
+			// Spawned via `sh -c 'unset ...; exec "$0" "$@"'` rather than invoking tool.path directly: Node's
+			// permission model (active on this module host per the manifest's declared permissions) forcibly
+			// re-injects NODE_OPTIONS (carrying --permission) into every child this process spawns, regardless
+			// of the env object passed to spawn() - verified directly, not just inferred from docs. That's a
+			// deliberate anti-sandbox-escape measure in Node itself, harmless for non-Node executables but
+			// fatal for a Node-based tool, since Node refuses to start at all with --permission set via
+			// NODE_OPTIONS. Routing through an interposed shell that unsets it right before exec sidesteps
+			// this: the exec'd target keeps the same pid (exec replaces the process image, doesn't fork), so
+			// this changes nothing about how the resulting process is tracked or killed afterward.
+			child = spawn(
+				'/bin/sh',
+				[
+					'-c',
+					'unset NODE_OPTIONS NODE_CHANNEL_FD NODE_CHANNEL_SERIALIZATION_MODE; exec "$0" "$@"',
+					tool.path,
+					...tool.args,
+				],
+				{
+					cwd: tool.cwd,
+					env: this.buildChildEnv(sessionEnv),
+					detached: true,
+					stdio: ['ignore', 'ignore', 'pipe'],
+				},
+			)
 			child.unref()
 		} catch (e) {
 			this.log('error', `Failed to start "${tool.label}": ${e instanceof Error ? e.message : String(e)}`)
@@ -173,20 +192,23 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		child.once('exit', (code, signal) => {
 			if (tool.flatpakAppId) {
 				// flatpak run hands off to the sandboxed instance and exits well before the app does -
-				// this is not the app stopping, so leave process_running state to the flatpak ps poll.
+				// this is not necessarily the app stopping, just logged quieter than a real exit.
 				this.log('debug', `"${tool.label}" flatpak run launcher exited (code ${code ?? 'null'}), handoff complete`)
 			} else if (tool.processMatch) {
 				// Same idea as Flatpak: this may just be a launcher handing off to the real process.
-				// Leave process_running state to the next external-process poll.
 				this.log('debug', `"${tool.label}" launcher exited (code ${code ?? 'null'})`)
 			} else {
 				this.log('info', `"${tool.label}" exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`)
-				this.checkFeedbacks('process_running')
 			}
 			if (code !== null && code !== 0 && stderrTail.trim()) {
 				this.log('warn', `"${tool.label}" stderr:\n${stderrTail.trim()}`)
 			}
 			this.processes.delete(id)
+			// Always refresh: for flatpak/processMatch tools this may just reflect a normal handoff (the
+			// poll will correct it within a few seconds either way), but if the process failed outright
+			// rather than handing off, isRunning() is now accurately false and the feedback must catch up
+			// immediately rather than staying stuck on whatever it showed when this process was launched.
+			this.checkFeedbacks('process_running')
 		})
 	}
 
@@ -257,6 +279,20 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		} else {
 			await this.startProcess(id)
 		}
+	}
+
+	private buildChildEnv(sessionEnv: Record<string, string>): NodeJS.ProcessEnv {
+		// process.env here is the module host's own live environment, which includes Node/Companion-internal
+		// plumbing that's only meaningful for the module host process itself: NODE_CHANNEL_* are IPC fork()
+		// artifacts (inheriting them crashes a spawned Node child with SIGABRT, since there's no real pipe at
+		// that fd), and NODE_OPTIONS carries the sandbox --permission flags Companion enables per the
+		// manifest's declared permissions - Node hard-refuses to start at all if a child inherits --permission
+		// via NODE_OPTIONS specifically (only allowed via direct CLI args). Strip these before forwarding.
+		const env = { ...process.env, ...sessionEnv }
+		delete env.NODE_OPTIONS
+		delete env.NODE_CHANNEL_FD
+		delete env.NODE_CHANNEL_SERIALIZATION_MODE
+		return env
 	}
 
 	private async getDesktopSessionEnv(): Promise<Record<string, string>> {
