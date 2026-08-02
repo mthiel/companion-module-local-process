@@ -1,5 +1,6 @@
 import { InstanceBase, InstanceStatus, type SomeCompanionConfigField } from '@companion-module/base'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import psList from 'ps-list'
@@ -37,6 +38,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	private readonly externallyRunning = new Set<string>()
 	// Flatpak app ids last seen running via `flatpak ps`. Authoritative for any tool with flatpakAppId set.
 	private readonly runningFlatpakApps = new Set<string>()
+	// Systemd user units last seen active via `systemctl --user is-active`. Authoritative for systemdUnit tools.
+	private readonly runningSystemdUnits = new Set<string>()
 	private pollTimer: ReturnType<typeof setInterval> | undefined
 
 	constructor(internal: unknown) {
@@ -60,6 +63,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			})
 			this.pollFlatpakApps().catch((e) => {
 				this.log('debug', `Flatpak instance poll failed: ${e instanceof Error ? e.message : String(e)}`)
+			})
+			this.pollSystemdUnits().catch((e) => {
+				this.log('debug', `Systemd unit poll failed: ${e instanceof Error ? e.message : String(e)}`)
 			})
 		}, EXTERNAL_POLL_INTERVAL_MS)
 	}
@@ -113,6 +119,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 
 	isRunning(id: string): boolean {
 		const tool = this.tools.find((t) => t.id === id)
+		if (tool?.systemdUnit) {
+			return this.runningSystemdUnits.has(tool.systemdUnit)
+		}
 		if (tool?.flatpakAppId) {
 			return this.runningFlatpakApps.has(tool.flatpakAppId)
 		}
@@ -130,12 +139,33 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			return
 		}
 
+		if (tool.systemdUnit) {
+			this.log('info', `Starting "${tool.label}" via systemctl --user start ${tool.systemdUnit}`)
+			try {
+				// No --wait here: for a persistent service it doesn't return once the unit is up, it blocks
+				// until the unit exits entirely - i.e. for the service's whole lifetime. This only rejects on
+				// a dispatch failure (bad unit name, etc.); a unit that starts and then immediately fails
+				// won't be caught here, but shows up within a few seconds via the is-active poll regardless.
+				await execFileAsync('systemctl', ['--user', 'start', tool.systemdUnit])
+				this.runningSystemdUnits.add(tool.systemdUnit)
+			} catch (e) {
+				this.log('error', `Failed to start "${tool.label}": ${e instanceof Error ? e.message : String(e)}`)
+				this.runningSystemdUnits.delete(tool.systemdUnit)
+			}
+			this.checkFeedbacks('process_running')
+			return
+		}
+
 		this.log('info', `Starting "${tool.label}": ${tool.path} ${tool.args.join(' ')}`.trimEnd())
 
 		// Companion launches each module host with a stripped-down environment (no DISPLAY/WAYLAND_DISPLAY/
 		// DBUS_SESSION_BUS_ADDRESS), so GUI tools spawned with a plain inherited env fail to find a display.
 		// Pull the real values from the systemd user manager, which the desktop session imports them into at login.
-		const sessionEnv = await this.getDesktopSessionEnv()
+		// Also resolve PATH via the user's own interactive shell rather than the module host's (or systemd
+		// user session's) bare PATH: neither includes per-project PATH setup like nvm/rbenv/pyenv version
+		// managers, which live in shell rc files - and a tool that itself shells out to something on PATH
+		// (e.g. a dev server invoking `npx`) silently fails to find it otherwise.
+		const [sessionEnv, shellPath] = await Promise.all([this.getDesktopSessionEnv(), this.getShellPath()])
 
 		let child: ChildProcess
 		try {
@@ -163,7 +193,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 				],
 				{
 					cwd: tool.cwd,
-					env: this.buildChildEnv(sessionEnv),
+					env: this.buildChildEnv(sessionEnv, shellPath),
 					detached: true,
 					stdio: ['ignore', 'ignore', 'pipe'],
 				},
@@ -214,6 +244,21 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 
 	async stopProcess(id: string): Promise<void> {
 		const tool = this.tools.find((t) => t.id === id)
+
+		if (tool?.systemdUnit) {
+			this.log('info', `Stopping "${tool.label}" via systemctl --user stop ${tool.systemdUnit}`)
+			try {
+				// No --wait: plain `stop` already blocks until the unit is fully stopped by default, and
+				// --wait is rejected outright as invalid alongside `stop` on some systemd versions anyway
+				// (verified directly - it's only accepted alongside `start`/`restart`).
+				await execFileAsync('systemctl', ['--user', 'stop', tool.systemdUnit])
+			} catch (e) {
+				this.log('warn', `Stopping "${tool.label}" reported an error: ${e instanceof Error ? e.message : String(e)}`)
+			}
+			this.runningSystemdUnits.delete(tool.systemdUnit)
+			this.checkFeedbacks('process_running')
+			return
+		}
 
 		if (tool?.flatpakAppId) {
 			this.log('info', `Stopping "${tool.label}" via flatpak kill`)
@@ -281,7 +326,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		}
 	}
 
-	private buildChildEnv(sessionEnv: Record<string, string>): NodeJS.ProcessEnv {
+	private buildChildEnv(sessionEnv: Record<string, string>, shellPath: string | undefined): NodeJS.ProcessEnv {
 		// process.env here is the module host's own live environment, which includes Node/Companion-internal
 		// plumbing that's only meaningful for the module host process itself: NODE_CHANNEL_* are IPC fork()
 		// artifacts (inheriting them crashes a spawned Node child with SIGABRT, since there's no real pipe at
@@ -292,6 +337,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		delete env.NODE_OPTIONS
 		delete env.NODE_CHANNEL_FD
 		delete env.NODE_CHANNEL_SERIALIZATION_MODE
+		if (shellPath) env.PATH = shellPath
 		return env
 	}
 
@@ -316,6 +362,33 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		}
 	}
 
+	private async getShellPath(): Promise<string | undefined> {
+		// Not process.env.SHELL: the module host's own environment doesn't reliably have it set, and falling
+		// back to /bin/sh is actively wrong here - it's bash running in POSIX/sh-compatibility mode, which
+		// does NOT source .bashrc/.zshrc for interactive shells, defeating the entire point of this. Reading
+		// the login shell from the OS user database instead works regardless of what env this process has.
+		const shell = os.userInfo().shell || '/bin/bash'
+		try {
+			// -i so rc files (nvm/rbenv/pyenv version-manager setup, etc.) actually get sourced, matching
+			// what a real terminal would have. Take the last non-empty output line in case the interactive
+			// shell prints other output (motd, etc.) before running the echo.
+			const { stdout } = await execFileAsync(shell, ['-ic', 'echo "$PATH"'], { timeout: 5000 })
+			const lines = stdout
+				.split('\n')
+				.map((line) => line.trim())
+				.filter(Boolean)
+			return lines.at(-1)
+		} catch (e) {
+			this.log(
+				'warn',
+				`Could not resolve PATH via ${shell}; tools that shell out to something on PATH themselves (npx, etc.) may fail to find it: ${
+					e instanceof Error ? e.message : String(e)
+				}`,
+			)
+			return undefined
+		}
+	}
+
 	private applyToolConfig(): void {
 		const { tools, errors } = ParseManagedTools(this.config.tools)
 		this.tools = tools
@@ -326,6 +399,16 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		const validIds = new Set(tools.map((t) => t.id))
 		for (const id of [...this.externallyRunning]) {
 			if (!validIds.has(id)) this.externallyRunning.delete(id)
+		}
+
+		const validAppIds = new Set(tools.map((t) => t.flatpakAppId).filter(Boolean))
+		for (const appId of [...this.runningFlatpakApps]) {
+			if (!validAppIds.has(appId)) this.runningFlatpakApps.delete(appId)
+		}
+
+		const validUnits = new Set(tools.map((t) => t.systemdUnit).filter(Boolean))
+		for (const unit of [...this.runningSystemdUnits]) {
+			if (!validUnits.has(unit)) this.runningSystemdUnits.delete(unit)
 		}
 	}
 
@@ -374,6 +457,34 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 				else this.runningFlatpakApps.delete(appId)
 			}
 		}
+
+		if (changed) this.checkFeedbacks('process_running')
+	}
+
+	private async pollSystemdUnits(): Promise<void> {
+		const units = [...new Set(this.tools.map((t) => t.systemdUnit).filter((unit): unit is string => !!unit))]
+		if (units.length === 0) return
+
+		// is-active exits non-zero when not all queried units are active (behavior has varied across systemd
+		// versions), but still prints one status line per unit either way - pull stdout from whichever path.
+		let stdout: string
+		try {
+			stdout = (await execFileAsync('systemctl', ['--user', 'is-active', ...units])).stdout
+		} catch (e) {
+			stdout = (e as { stdout?: string }).stdout ?? ''
+		}
+		const states = stdout.split('\n').map((line) => line.trim())
+
+		let changed = false
+		units.forEach((unit, index) => {
+			const isRunning = states[index] === 'active'
+			const was = this.runningSystemdUnits.has(unit)
+			if (isRunning !== was) {
+				changed = true
+				if (isRunning) this.runningSystemdUnits.add(unit)
+				else this.runningSystemdUnits.delete(unit)
+			}
+		})
 
 		if (changed) this.checkFeedbacks('process_running')
 	}

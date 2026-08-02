@@ -19,6 +19,8 @@ to control. Each entry:
 - `flatpakAppId` (optional): Set this if `path` launches the tool via `flatpak run`. See below.
 - `processMatch` (optional): Set this for launchers that exit right after starting the real,
   longer-lived process (self-updaters, Steam games, etc). See below.
+- `systemdUnit` (optional): Manage this tool as a systemd user unit instead — `path`/`args`/`cwd`
+  are unused when set. See below.
 
 Example:
 
@@ -60,19 +62,29 @@ while it's running — the full path or a distinctive argument usually works wel
 scan running processes for that substring to determine running state, and send a stop signal
 directly to any matching process id.
 
+#### Systemd user units
+
+For a tool that expects a genuinely normal process environment (its own PATH-based subprocess
+spawning, restart-on-crash, etc.), write a systemd user unit for it
+(`~/.config/systemd/user/<name>.service`, then `systemctl --user daemon-reload`) instead of fighting
+to make this module's launched environment look like a real login shell. Set `systemdUnit` to the unit
+name and the module uses `systemctl --user start`/`stop` and a background `systemctl --user
+is-active` poll — the same pattern as Flatpak, just backed by systemd instead of an app id.
+
 ### Actions
 
 - **Start Process** — starts the selected tool, if it isn't already running.
 - **Stop Process** — stops the selected tool, if it's running and was either started by this module
-  or matched via `flatpakAppId`/`processMatch`. Tools running externally with no such handle can't be
-  stopped from here (a warning is logged instead).
+  or matched via `flatpakAppId`/`processMatch`/`systemdUnit`. Tools running externally with no such
+  handle can't be stopped from here (a warning is logged instead).
 - **Toggle Process** — Start if not running, Stop if running.
 
 ### Feedback
 
 - **Process Running** — boolean feedback per tool. Updates instantly for anything this module
   launched directly (on the process's own start/exit), and within a few seconds for tools running
-  externally, via Flatpak, or via `processMatch`, all of which are checked on a background poll.
+  externally, via Flatpak, `processMatch`, or a systemd unit, all of which are checked on a
+  background poll.
 
 ### Notes
 

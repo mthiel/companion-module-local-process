@@ -41,9 +41,6 @@
 	{
 		"id": "icarus",
 		"label": "ICARUS Terminal (service)",
-		"processMatch": "icarus/src/service/main.js",
-		"path": "/home/matt/.nvm/versions/node/v18.20.8/bin/node",
-		"args": ["src/service/main.js", "--dev"],
-		"cwd": "/home/matt/src/Elite_Dangerous/icarus"
+		"systemdUnit": "icarus-terminal.service"
 	}
 ]

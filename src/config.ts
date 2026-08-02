@@ -21,6 +21,14 @@ export interface ManagedTool {
 	 * matching pid instead of relying on a ChildProcess handle.
 	 */
 	processMatch: string | undefined
+	/**
+	 * Manage this tool as a systemd user unit instead of spawning it directly: start/stop become
+	 * `systemctl --user start/stop --wait <unit>`, and running state is tracked via `systemctl --user
+	 * is-active`. Best fit for anything that expects a normal service environment (its own PATH-based
+	 * subprocess spawning, restart-on-crash, etc.) rather than what a sandboxed module host can give it -
+	 * systemd owns the unit's environment and lifecycle entirely, so `path`/`args`/`cwd` are unused.
+	 */
+	systemdUnit: string | undefined
 }
 
 export type ModuleConfig = {
@@ -52,9 +60,11 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 				'<code>cwd</code> (working directory), and <code>flatpakAppId</code> (set this when ' +
 				'<code>path</code> launches via <code>flatpak run</code> — stop and running-state checks ' +
 				'will use <code>flatpak kill</code>/<code>flatpak ps</code> instead of process tracking, since ' +
-				'Flatpak run exits right after launch handoff), and <code>processMatch</code> (a substring to ' +
+				'Flatpak run exits right after launch handoff), <code>processMatch</code> (a substring to ' +
 				"match against a running process's full command line, for launchers that exit immediately " +
-				'after starting some other process, e.g. self-updating apps). Example:<br/><pre>' +
+				'after starting some other process, e.g. self-updating apps), and <code>systemdUnit</code> ' +
+				'(manage this tool as a systemd user unit instead — <code>path</code>/<code>args</code>/' +
+				'<code>cwd</code> are unused when set). Example:<br/><pre>' +
 				JSON.stringify(SAMPLE_TOOLS, null, 2) +
 				'</pre>',
 		},
@@ -99,7 +109,7 @@ export function ParseManagedTools(raw: string | undefined): { tools: ManagedTool
 			errors.push(`Tool #${index + 1} is not an object, skipping`)
 			return
 		}
-		const { id, label, path, args, cwd, flatpakAppId, processMatch } = entry as Record<string, unknown>
+		const { id, label, path, args, cwd, flatpakAppId, processMatch, systemdUnit } = entry as Record<string, unknown>
 
 		if (typeof id !== 'string' || !id.trim()) {
 			errors.push(`Tool #${index + 1} is missing a valid "id", skipping`)
@@ -113,8 +123,17 @@ export function ParseManagedTools(raw: string | undefined): { tools: ManagedTool
 			errors.push(`Tool "${id}" is missing a valid "label", skipping`)
 			return
 		}
-		if (typeof path !== 'string' || !path.trim()) {
+		if (systemdUnit !== undefined && (typeof systemdUnit !== 'string' || !systemdUnit.trim())) {
+			errors.push(`Tool "${id}" has an invalid "systemdUnit" (must be a non-empty string), skipping`)
+			return
+		}
+		// path is unused (and so not required) for systemd-managed tools - systemd owns the launch entirely.
+		if (!systemdUnit && (typeof path !== 'string' || !path.trim())) {
 			errors.push(`Tool "${id}" is missing a valid "path", skipping`)
+			return
+		}
+		if (path !== undefined && typeof path !== 'string') {
+			errors.push(`Tool "${id}" has an invalid "path" (must be a string), skipping`)
 			return
 		}
 		if (args !== undefined && (!Array.isArray(args) || !args.every((a) => typeof a === 'string'))) {
@@ -138,11 +157,13 @@ export function ParseManagedTools(raw: string | undefined): { tools: ManagedTool
 		tools.push({
 			id,
 			label,
-			path,
+			// Unused (defaults to '') for systemd-managed tools, where systemd owns the launch entirely.
+			path: typeof path === 'string' ? path : '',
 			args: args ?? [],
 			cwd: cwd && cwd.trim() ? cwd : undefined,
 			flatpakAppId: flatpakAppId || undefined,
 			processMatch: processMatch || undefined,
+			systemdUnit: systemdUnit || undefined,
 		})
 	})
 

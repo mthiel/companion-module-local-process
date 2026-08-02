@@ -42,6 +42,7 @@ Companion config API for this, so it's a JSON textarea). Each entry:
 | `cwd`          | No       | Working directory                                                                             |
 | `flatpakAppId` | No       | See [Flatpak apps](#flatpak-apps) below                                                       |
 | `processMatch` | No       | See [Launchers that hand off to another process](#launchers-that-hand-off-to-another-process) |
+| `systemdUnit`  | No       | See [Systemd user units](#systemd-user-units) below                                           |
 
 ### Example
 
@@ -109,6 +110,29 @@ with `ps aux` while it's running), and the module will:
 This is the same "match by name" approach a shell-command/`pkill` workaround would use — but scoped to
 a single opt-in field per tool, rather than being how every tool is tracked.
 
+### Systemd user units
+
+Some tools expect a normal, complete process environment more than the above workarounds can really
+give them — e.g. one that itself shells out to other PATH-based tooling (`npx`, etc.), or that should
+restart on crash. Rather than trying to keep patching the module host's environment to look more like
+a real login shell, hand the whole thing to systemd instead: write a
+[systemd user unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html) for
+the tool (`~/.config/systemd/user/<name>.service`, then `systemctl --user daemon-reload`), and set
+`systemdUnit` to its unit name.
+
+```json
+{
+	"id": "icarus",
+	"label": "ICARUS Terminal (service)",
+	"systemdUnit": "icarus.service"
+}
+```
+
+`path`/`args`/`cwd` are unused when `systemdUnit` is set — the unit file owns the launch entirely. Start
+and stop become `systemctl --user start`/`stop <unit>`, and running state is tracked via a
+background `systemctl --user is-active` poll (every 5s), the same pattern as Flatpak but using systemd's
+own unit state instead of an app id.
+
 ## Requirements
 
 - **Linux**, matching this module's assumptions (`systemctl --user`, `/proc`-based process listing via
@@ -125,6 +149,12 @@ a single opt-in field per tool, rather than being how every tool is tracked.
   those values in. If that command isn't available, tools are still launched, just without those
   variables, and a warning is logged.
 - `flatpak` on `PATH` if any tool uses `flatpakAppId`.
+- A tool that itself shells out to something on `PATH` (e.g. a dev server invoking `npx`) needs that
+  `PATH` to actually be right — neither the module host's own environment nor the systemd user session's
+  has version-manager setup (nvm/rbenv/pyenv/etc.), since that lives in shell rc files. Before spawning,
+  the module resolves `PATH` by invoking the user's login shell (read from the OS user database, not an
+  env var) interactively, the same way a real terminal would. For anything that needs more than this can
+  reliably give it, see [Systemd user units](#systemd-user-units) above instead.
 - `/bin/sh`. Every tool is launched via `sh -c 'unset NODE_OPTIONS ...; exec "$0" "$@"'` rather than
   invoking `path` directly — Node's permission model, active on the module host per the manifest's
   declared permissions, forcibly re-injects `NODE_OPTIONS` (carrying `--permission`) into every child
